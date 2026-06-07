@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -156,6 +157,12 @@ func InitDB(cfg *Config) error {
 		hash, _ := HashPassword("123456")
 		DB.Exec("INSERT INTO admins (username, password, nickname, role, must_change_password, created_at) VALUES (?, ?, ?, 1, 1, datetime('now'))",
 			"admin", hash, "超级管理员")
+		log.Println("========================================")
+		log.Println("  首次启动 - 初始管理员账号")
+		log.Println("  用户名: admin")
+		log.Println("  密码:   123456")
+		log.Println("  请登录后立即修改默认密码！")
+		log.Println("========================================")
 	}
 
 	return nil
@@ -271,6 +278,7 @@ func createTables() error {
 	ensureColumn("cloudblack_records", "reviewed_at", "TEXT")
 	ensureColumn("cloudblack_records", "review_note", "TEXT")
 	ensureColumn("cloudblack_records", "reject_reason", "TEXT")
+	ensureColumn("admin_sessions", "csrf_token", "TEXT")
 
 	defaults := map[string]string{
 		"public_query_rpm":  "30",

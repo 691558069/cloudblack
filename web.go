@@ -220,10 +220,10 @@ body:after{content:"";position:fixed;inset:0;background-image:linear-gradient(rg
 <div class="submit-note"><div><strong>1. 填写QQ</strong>系统会先检查重复记录</div><div><strong>2. 描述原因</strong>请尽量提供清楚依据</div><div><strong>3. 等待审核</strong>管理员确认后生效</div></div>
 <div class="card">`
 	if errorMsg != "" {
-		html += `<div class="error">` + errorMsg + `</div>`
+		html += `<div class="error">` + esc(errorMsg) + `</div>`
 	}
 	if successMsg != "" {
-		html += `<div class="success">` + successMsg + `</div>`
+		html += `<div class="success">` + esc(successMsg) + `</div>`
 	}
 	html += `
 <form method="POST" action="/api/web/submit">
@@ -273,6 +273,15 @@ func webSubmitPost(c echo.Context) error {
 
 	if !ValidateQQ(qq) {
 		return c.Redirect(302, "/web/submit?error=QQ号格式不正确")
+	}
+	if len(nickname) > 50 {
+		return c.Redirect(302, "/web/submit?error=昵称不能超过50个字符")
+	}
+	if len(reason) > 2000 {
+		return c.Redirect(302, "/web/submit?error=云黑原因不能超过2000个字符")
+	}
+	if len(subjectName) > 100 {
+		return c.Redirect(302, "/web/submit?error=主体名称不能超过100个字符")
 	}
 
 	minReason := GetSettingInt("submit_min_reason", 10)

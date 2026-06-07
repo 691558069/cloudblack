@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"math"
@@ -12,6 +15,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+)
+
+const (
+	RoleSuperAdmin = 1
+	RoleReviewer   = 2
+	RoleOperator   = 3
 )
 
 const adminHTML = `
@@ -228,6 +237,57 @@ func esc(s string) string {
 	return template.HTMLEscapeString(s)
 }
 
+func generateCSRFToken() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func getCSRFToken(c echo.Context) string {
+	token, ok := c.Get("csrf_token").(string)
+	if ok && token != "" {
+		return token
+	}
+	return ""
+}
+
+func RequireRole(minRole int) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			role, ok := c.Get("admin_role").(int)
+			if !ok || role > minRole {
+				return c.String(http.StatusForbidden, "权限不足")
+			}
+			return next(c)
+		}
+	}
+}
+
+func csrfProtectMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if c.Request().Method != "POST" {
+			return next(c)
+		}
+		cookie, err := c.Cookie("admin_session")
+		if err != nil || cookie.Value == "" {
+			return c.Redirect(302, "/admin/login")
+		}
+		var storedCSRF string
+		err = DB.QueryRow("SELECT COALESCE(csrf_token,'') FROM admin_sessions WHERE token = ? AND datetime(expires_at) > datetime('now')", cookie.Value).Scan(&storedCSRF)
+		if err != nil || storedCSRF == "" {
+			return c.String(http.StatusForbidden, "CSRF token missing")
+		}
+		formToken := c.FormValue("csrf_token")
+		if formToken == "" {
+			formToken = c.QueryParam("csrf_token")
+		}
+		if subtle.ConstantTimeCompare([]byte(formToken), []byte(storedCSRF)) != 1 {
+			return c.String(http.StatusForbidden, "CSRF token mismatch")
+		}
+		return next(c)
+	}
+}
+
 func parseSeverity(value string) int {
 	n, err := strconv.Atoi(value)
 	if err != nil || n < 1 || n > 5 {
@@ -249,38 +309,44 @@ func RegisterAdminRoutes(e *echo.Echo, cfg *Config) {
 	})(adminLoginPost))
 	admin.GET("/logout", adminLogout)
 
-	csrfBlock := csrfMiddleware
 	adminAuth := admin.Group("")
-	adminAuth.Use(AdminAuthMiddleware, csrfBlock)
+	adminAuth.Use(AdminAuthMiddleware)
 
-	adminAuth.GET("/", adminDashboard)
-	adminAuth.GET("/index", adminDashboard)
-	adminAuth.GET("/status", adminStatusJSON)
-	adminAuth.GET("/password", adminChangePassword)
-	adminAuth.POST("/password", adminChangePasswordPost)
-	adminAuth.GET("/list", adminList)
-	adminAuth.GET("/detail", adminDetail)
-	adminAuth.POST("/subject/add_account", adminSubjectAddAccount)
-	adminAuth.POST("/subject/delete_account", adminSubjectDeleteAccount)
-	adminAuth.POST("/subject/merge", adminSubjectMerge)
-	adminAuth.GET("/review", adminReview)
-	adminAuth.GET("/add", adminAdd)
-	adminAuth.POST("/add", adminAddPost)
-	adminAuth.GET("/edit", adminEdit)
-	adminAuth.POST("/edit", adminEditPost)
-	adminAuth.POST("/delete", adminDelete)
-	adminAuth.POST("/review_action", adminReviewAction)
-	adminAuth.GET("/stats", adminStats)
-	adminAuth.GET("/admins", adminAdmins)
-	adminAuth.POST("/admins", adminAdminsPost)
-	adminAuth.POST("/delete_admin", adminDeleteAdmin)
-	adminAuth.GET("/apikeys", adminAPIKeys)
-	adminAuth.POST("/apikeys", adminAPIKeysPost)
-	adminAuth.POST("/toggle_apikey", adminToggleAPIKey)
-	adminAuth.GET("/settings", adminSettings)
-	adminAuth.POST("/settings", adminSettingsPost)
-	adminAuth.GET("/logs", adminLogs)
-	adminAuth.GET("/apidoc", adminAPIDoc)
+	operatorAuth := adminAuth.Group("")
+	operatorAuth.Use(RequireRole(RoleOperator))
+	operatorAuth.GET("/", adminDashboard)
+	operatorAuth.GET("/index", adminDashboard)
+	operatorAuth.GET("/status", adminStatusJSON)
+	operatorAuth.GET("/password", adminChangePassword)
+	operatorAuth.POST("/password", csrfProtectMiddleware(adminChangePasswordPost))
+	operatorAuth.GET("/list", adminList)
+	operatorAuth.GET("/detail", adminDetail)
+	operatorAuth.GET("/add", adminAdd)
+	operatorAuth.POST("/add", csrfProtectMiddleware(adminAddPost))
+	operatorAuth.GET("/review", adminReview)
+	operatorAuth.POST("/review_action", csrfProtectMiddleware(adminReviewAction))
+	operatorAuth.GET("/stats", adminStats)
+	operatorAuth.GET("/logs", adminLogs)
+	operatorAuth.GET("/apidoc", adminAPIDoc)
+
+	reviewerAuth := adminAuth.Group("")
+	reviewerAuth.Use(RequireRole(RoleReviewer))
+	reviewerAuth.POST("/edit", csrfProtectMiddleware(adminEditPost))
+	reviewerAuth.POST("/delete", csrfProtectMiddleware(adminDelete))
+	reviewerAuth.POST("/subject/add_account", csrfProtectMiddleware(adminSubjectAddAccount))
+	reviewerAuth.POST("/subject/delete_account", csrfProtectMiddleware(adminSubjectDeleteAccount))
+	reviewerAuth.POST("/subject/merge", csrfProtectMiddleware(adminSubjectMerge))
+
+	superAuth := adminAuth.Group("")
+	superAuth.Use(RequireRole(RoleSuperAdmin))
+	superAuth.GET("/admins", adminAdmins)
+	superAuth.POST("/admins", csrfProtectMiddleware(adminAdminsPost))
+	superAuth.POST("/delete_admin", csrfProtectMiddleware(adminDeleteAdmin))
+	superAuth.GET("/apikeys", adminAPIKeys)
+	superAuth.POST("/apikeys", csrfProtectMiddleware(adminAPIKeysPost))
+	superAuth.POST("/toggle_apikey", csrfProtectMiddleware(adminToggleAPIKey))
+	superAuth.GET("/settings", adminSettings)
+	superAuth.POST("/settings", csrfProtectMiddleware(adminSettingsPost))
 }
 
 func AdminAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -309,25 +375,10 @@ func AdminAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		c.Set("admin_nickname", nickname)
 		c.Set("admin_role", role)
 
-		return next(c)
-	}
-}
+		var csrfToken string
+		DB.QueryRow("SELECT COALESCE(csrf_token,'') FROM admin_sessions WHERE token = ?", token).Scan(&csrfToken)
+		c.Set("csrf_token", csrfToken)
 
-func csrfMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		if c.Request().Method != "POST" {
-			return next(c)
-		}
-		origin := c.Request().Header.Get("Origin")
-		referer := c.Request().Header.Get("Referer")
-		if origin == "" && referer == "" {
-			return next(c)
-		}
-		host := c.Request().Host
-		ok := strings.Contains(origin, host) || strings.Contains(referer, host)
-		if !ok {
-			return c.String(http.StatusForbidden, "Forbidden")
-		}
 		return next(c)
 	}
 }
@@ -362,14 +413,13 @@ button:hover{background:#2a2f38;transform:translateY(-1px)}
 <h1>云黑系统</h1>
 <p>管理后台登录</p>`
 	if errMsg != "" {
-		html += `<div class="error">` + errMsg + `</div>`
+		html += `<div class="error">` + esc(errMsg) + `</div>`
 	}
 	html += `<form method="POST">
 <div class="form-group"><label>用户名</label><input type="text" name="username" required></div>
 <div class="form-group"><label>密码</label><input type="password" name="password" required></div>
 <button type="submit">登录</button>
 </form>
-<p class="tips">默认账号: admin / 123456</p>
 </div>
 </body>
 </html>`
@@ -403,6 +453,8 @@ func adminLoginPost(c echo.Context) error {
 		expire = AppConfig.Admin.Expire
 	}
 	DB.Exec("INSERT INTO admin_sessions (token, admin_id, expires_at, created_at) VALUES (?, ?, datetime('now', ?), datetime('now'))", token, admin.ID, "+"+strconv.Itoa(expire)+" seconds")
+	csrfToken := generateCSRFToken()
+	DB.Exec("UPDATE admin_sessions SET csrf_token = ? WHERE token = ?", csrfToken, token)
 	cookie := &http.Cookie{Name: "admin_session", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: expire}
 	if AppConfig != nil && AppConfig.Security.SecureCookie {
 		cookie.Secure = true
@@ -640,7 +692,7 @@ func adminList(c echo.Context) error {
 	content += `</select><button class="btn" type="submit">查询</button><a class="btn" href="/admin/list">重置</a></form><table><thead><tr><th>ID</th><th>QQ号</th><th>昵称</th><th>标签</th><th>原因</th><th>严重程度</th><th>状态</th><th>添加时间</th><th>操作</th></tr></thead><tbody>`
 	for _, r := range records {
 		id := strconv.Itoa(r["id"].(int))
-		content += `<tr><td>` + id + `</td><td>` + strconv.FormatInt(r["qq"].(int64), 10) + `</td><td>` + esc(r["nickname"].(string)) + `</td><td>` + esc(r["tags"].(string)) + `</td><td>` + esc(r["reason"].(string)) + `</td><td>` + esc(r["severity_text"].(string)) + `</td><td>` + esc(r["status_text"].(string)) + `</td><td>` + esc(r["created_at"].(string)) + `</td><td><a href="/admin/detail?id=` + id + `" class="btn">详情</a> <a href="/admin/edit?id=` + id + `" class="btn">编辑</a> <form method="POST" action="/admin/delete" style="display:inline"><input type="hidden" name="id" value="` + id + `"><button type="submit" class="btn btn-danger" onclick="return confirm('确认删除?')">删除</button></form></td></tr>`
+		content += `<tr><td>` + id + `</td><td>` + strconv.FormatInt(r["qq"].(int64), 10) + `</td><td>` + esc(r["nickname"].(string)) + `</td><td>` + esc(r["tags"].(string)) + `</td><td>` + esc(r["reason"].(string)) + `</td><td>` + esc(r["severity_text"].(string)) + `</td><td>` + esc(r["status_text"].(string)) + `</td><td>` + esc(r["created_at"].(string)) + `</td><td><a href="/admin/detail?id=` + id + `" class="btn">详情</a> <a href="/admin/edit?id=` + id + `" class="btn">编辑</a> <form method="POST" action="/admin/delete" style="display:inline"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="id" value="` + id + `"><button type="submit" class="btn btn-danger" onclick="return confirm('确认删除?')">删除</button></form></td></tr>`
 	}
 	content += `</tbody></table>`
 	maxPage := (total + pageSize - 1) / pageSize
@@ -653,7 +705,7 @@ func adminList(c echo.Context) error {
 		if i == page {
 			active = ` class="active"`
 		}
-		content += `<a` + active + ` href="/admin/list?q=` + q + `&severity=` + severity + `&page=` + strconv.Itoa(i) + `">` + strconv.Itoa(i) + `</a>`
+		content += `<a` + active + ` href="/admin/list?q=` + esc(q) + `&severity=` + esc(severity) + `&page=` + strconv.Itoa(i) + `">` + strconv.Itoa(i) + `</a>`
 	}
 	content += `</div></div>`
 
@@ -676,10 +728,10 @@ func adminDetail(c echo.Context) error {
 	content := `<div class="card"><h2>云黑详情 #` + strconv.Itoa(r.ID) + `</h2><p><strong>主体：</strong>` + esc(r.SubjectName) + `（ID: ` + strconv.Itoa(r.SubjectID) + `）</p><p><strong>QQ：</strong>` + strconv.FormatInt(r.QQ, 10) + `</p><p><strong>昵称：</strong>` + esc(r.Nickname) + `</p><p><strong>标签：</strong>` + esc(r.Tags) + `</p><p><strong>严重程度：</strong>` + GetSeverityText(r.Severity) + ` - ` + GetSeverityDesc(r.Severity) + `</p><p><strong>原因：</strong>` + esc(r.Reason) + `</p><p><strong>审核：</strong>管理员ID ` + strconv.Itoa(r.ReviewedBy) + ` / ` + esc(r.ReviewedAt) + `</p><p><strong>审核备注：</strong>` + esc(r.ReviewNote) + `</p></div>`
 	content += `<div class="card"><h2>关联账号</h2><table><thead><tr><th>平台</th><th>账号</th><th>昵称</th><th>操作</th></tr></thead><tbody>`
 	for _, a := range accounts {
-		content += `<tr><td>` + esc(a.Platform) + `</td><td>` + esc(a.Account) + `</td><td>` + esc(a.Nickname) + `</td><td><form method="POST" action="/admin/subject/delete_account"><input type="hidden" name="record_id" value="` + id + `"><input type="hidden" name="platform" value="` + esc(a.Platform) + `"><input type="hidden" name="account" value="` + esc(a.Account) + `"><button class="btn btn-danger" onclick="return confirm('确认移除该关联账号?')">移除</button></form></td></tr>`
+		content += `<tr><td>` + esc(a.Platform) + `</td><td>` + esc(a.Account) + `</td><td>` + esc(a.Nickname) + `</td><td><form method="POST" action="/admin/subject/delete_account"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="record_id" value="` + id + `"><input type="hidden" name="platform" value="` + esc(a.Platform) + `"><input type="hidden" name="account" value="` + esc(a.Account) + `"><button class="btn btn-danger" onclick="return confirm('确认移除该关联账号?')">移除</button></form></td></tr>`
 	}
-	content += `</tbody></table><h3>添加账号</h3><form method="POST" action="/admin/subject/add_account" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px"><input type="hidden" name="record_id" value="` + id + `"><input name="platform" placeholder="平台" required><input name="account" placeholder="账号" required><input name="nickname" placeholder="昵称"><button class="btn">添加</button></form></div>`
-	content += `<div class="card"><h2>合并主体</h2><p>把当前记录的主体合并到目标主体 ID，当前记录和关联账号会归属到目标主体。</p><form method="POST" action="/admin/subject/merge" style="display:grid;grid-template-columns:1fr auto;gap:10px"><input type="hidden" name="record_id" value="` + id + `"><input name="target_subject_id" placeholder="目标主体ID" required><button class="btn">合并</button></form></div>`
+	content += `</tbody></table><h3>添加账号</h3><form method="POST" action="/admin/subject/add_account" style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="record_id" value="` + id + `"><input name="platform" placeholder="平台" required><input name="account" placeholder="账号" required><input name="nickname" placeholder="昵称"><button class="btn">添加</button></form></div>`
+	content += `<div class="card"><h2>合并主体</h2><p>把当前记录的主体合并到目标主体 ID，当前记录和关联账号会归属到目标主体。</p><form method="POST" action="/admin/subject/merge" style="display:grid;grid-template-columns:1fr auto;gap:10px"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="record_id" value="` + id + `"><input name="target_subject_id" placeholder="目标主体ID" required><button class="btn">合并</button></form></div>`
 	return renderAdminPage(c, "云黑详情", content)
 }
 
@@ -792,7 +844,7 @@ func adminReview(c echo.Context) error {
 			accountsText = strings.Join(items, " / ")
 		}
 		reviewID := strconv.Itoa(r["id"].(int))
-		content += `<tr><td>` + reviewID + `</td><td>` + strconv.FormatInt(r["qq"].(int64), 10) + `</td><td>` + r["nickname"].(string) + `</td><td>` + r["reason"].(string) + `</td><td>` + r["tags"].(string) + `</td><td>` + accountsText + `</td><td>` + r["severity_text"].(string) + `<br><small style="color:#6b7280">` + r["severity_desc"].(string) + `</small></td><td>` + r["created_at"].(string) + `</td><td><textarea form="approve-` + reviewID + `" name="review_note" placeholder="通过备注，可选" style="min-width:180px;min-height:58px"></textarea><textarea form="reject-` + reviewID + `" name="review_note" placeholder="拒绝原因，必填" style="min-width:180px;min-height:58px;margin-top:6px"></textarea></td><td><form id="approve-` + reviewID + `" method="POST" action="/admin/review_action" style="display:inline"><input type="hidden" name="id" value="` + reviewID + `"><input type="hidden" name="action" value="approve"><button type="submit" class="btn btn-success">通过</button></form> <form id="reject-` + reviewID + `" method="POST" action="/admin/review_action" style="display:inline"><input type="hidden" name="id" value="` + reviewID + `"><input type="hidden" name="action" value="reject"><button type="submit" class="btn btn-danger">拒绝</button></form></td></tr>`
+		content += `<tr><td>` + reviewID + `</td><td>` + strconv.FormatInt(r["qq"].(int64), 10) + `</td><td>` + esc(r["nickname"].(string)) + `</td><td>` + esc(r["reason"].(string)) + `</td><td>` + esc(r["tags"].(string)) + `</td><td>` + esc(accountsText) + `</td><td>` + esc(r["severity_text"].(string)) + `<br><small style="color:#6b7280">` + esc(r["severity_desc"].(string)) + `</small></td><td>` + esc(r["created_at"].(string)) + `</td><td><textarea form="approve-` + reviewID + `" name="review_note" placeholder="通过备注，可选" style="min-width:180px;min-height:58px"></textarea><textarea form="reject-` + reviewID + `" name="review_note" placeholder="拒绝原因，必填" style="min-width:180px;min-height:58px;margin-top:6px"></textarea></td><td><form id="approve-` + reviewID + `" method="POST" action="/admin/review_action" style="display:inline"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="id" value="` + reviewID + `"><input type="hidden" name="action" value="approve"><button type="submit" class="btn btn-success">通过</button></form> <form id="reject-` + reviewID + `" method="POST" action="/admin/review_action" style="display:inline"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="id" value="` + reviewID + `"><input type="hidden" name="action" value="reject"><button type="submit" class="btn btn-danger">拒绝</button></form></td></tr>`
 	}
 	content += `</tbody></table></div>`
 
@@ -804,9 +856,10 @@ func adminAdd(c echo.Context) error {
 
 	content := `<div class="card"><h2>添加云黑</h2>`
 	if errorMsg != "" {
-		content += `<div class="error">` + errorMsg + `</div>`
+		content += `<div class="error">` + esc(errorMsg) + `</div>`
 	}
 	content += `<form method="POST" action="/admin/add">
+		<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 		<div class="form-group"><label>QQ号 *</label><input type="text" name="qq" required></div>
 		<div class="form-group"><label>昵称</label><input type="text" name="nickname"></div>
 		<div class="form-group"><label>云黑原因 *</label><textarea name="reason" required></textarea></div>
@@ -832,6 +885,7 @@ func adminAddPost(c echo.Context) error {
 	nickname := c.FormValue("nickname")
 	reason := c.FormValue("reason")
 	severity := c.FormValue("severity")
+	subjectName := c.FormValue("subject_name")
 
 	if qq == "" || reason == "" {
 		return c.Redirect(302, "/admin/add?error=请填写QQ号和原因")
@@ -839,6 +893,15 @@ func adminAddPost(c echo.Context) error {
 
 	if !ValidateQQ(qq) {
 		return c.Redirect(302, "/admin/add?error=QQ号格式不正确")
+	}
+	if len(nickname) > 50 {
+		return c.Redirect(302, "/admin/add?error=昵称不能超过50个字符")
+	}
+	if len(reason) > 2000 {
+		return c.Redirect(302, "/admin/add?error=云黑原因不能超过2000个字符")
+	}
+	if len(subjectName) > 100 {
+		return c.Redirect(302, "/admin/add?error=主体名称不能超过100个字符")
 	}
 	qqNum64, _ := strconv.ParseInt(qq, 10, 64)
 	qqNum := int(qqNum64)
@@ -887,10 +950,11 @@ func adminEdit(c echo.Context) error {
 	<div class="card">
 	<h2>编辑云黑</h2>
 	<form method="POST" action="/admin/edit">
+		<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 		<input type="hidden" name="id" value="` + id + `">
 		<div class="form-group"><label>QQ号</label><input type="text" name="qq" value="` + strconv.FormatInt(r.QQ, 10) + `" required></div>
-		<div class="form-group"><label>昵称</label><input type="text" name="nickname" value="` + r.Nickname + `"></div>
-		<div class="form-group"><label>原因</label><textarea name="reason" required>` + r.Reason + `</textarea></div>
+		<div class="form-group"><label>昵称</label><input type="text" name="nickname" value="` + esc(r.Nickname) + `"></div>
+		<div class="form-group"><label>原因</label><textarea name="reason" required>` + esc(r.Reason) + `</textarea></div>
 		<div class="form-group"><label>严重程度</label>
 		<select name="severity">
 			<option value="1"` + selected(1, r.Severity) + `>轻微</option>
@@ -918,6 +982,12 @@ func adminEditPost(c echo.Context) error {
 	if !ValidateQQ(qq) {
 		return c.Redirect(302, "/admin/list?error=QQ号格式不正确")
 	}
+	if len(nickname) > 50 {
+		return c.Redirect(302, "/admin/edit?id="+id+"&error=昵称不能超过50个字符")
+	}
+	if len(reason) > 2000 {
+		return c.Redirect(302, "/admin/edit?id="+id+"&error=云黑原因不能超过2000个字符")
+	}
 	qqNum64, _ := strconv.ParseInt(qq, 10, 64)
 	qqNum := int(qqNum64)
 	severityNum := parseSeverity(severity)
@@ -942,7 +1012,7 @@ func adminReviewAction(c echo.Context) error {
 	action := c.FormValue("action")
 	note := c.FormValue("review_note")
 	if err := performReviewAction(id, action, getAdminID(c), note); err != nil {
-		return c.Redirect(302, "/admin/review?error="+err.Error())
+		return c.Redirect(302, "/admin/review?error=操作失败，请重试")
 	}
 	return c.Redirect(302, "/admin/review")
 }
@@ -1059,6 +1129,7 @@ func adminAdmins(c echo.Context) error {
 	<div class="card">
 	<h2>添加管理员</h2>
 	<form method="POST" action="/admin/admins">
+		<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 		<div class="form-group"><label>用户名</label><input type="text" name="username" required></div>
 		<div class="form-group"><label>密码</label><input type="password" name="password" required></div>
 		<div class="form-group"><label>昵称</label><input type="text" name="nickname"></div>
@@ -1070,7 +1141,7 @@ func adminAdmins(c echo.Context) error {
 	<table><thead><tr><th>ID</th><th>用户名</th><th>昵称</th><th>最后登录</th><th>操作</th></tr></thead><tbody>
 	`
 	for _, a := range admins {
-		content += `<tr><td>` + strconv.Itoa(a["id"].(int)) + `</td><td>` + a["username"].(string) + `</td><td>` + a["nickname"].(string) + `</td><td>` + a["last_login"].(string) + `</td><td><form method="POST" action="/admin/delete_admin" style="display:inline"><input type="hidden" name="id" value="` + strconv.Itoa(a["id"].(int)) + `"><button type="submit" class="btn btn-danger" onclick="return confirm('确认删除?')">删除</button></form></td></tr>`
+		content += `<tr><td>` + strconv.Itoa(a["id"].(int)) + `</td><td>` + esc(a["username"].(string)) + `</td><td>` + esc(a["nickname"].(string)) + `</td><td>` + a["last_login"].(string) + `</td><td><form method="POST" action="/admin/delete_admin" style="display:inline"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="id" value="` + strconv.Itoa(a["id"].(int)) + `"><button type="submit" class="btn btn-danger" onclick="return confirm('确认删除?')">删除</button></form></td></tr>`
 	}
 	content += `</tbody></table></div>`
 
@@ -1135,6 +1206,7 @@ func adminAPIKeys(c echo.Context) error {
 	<div class="card">
 	<h2>创建新的API密钥</h2>
 	<form method="POST" action="/admin/apikeys">
+		<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 		<div class="form-group">
 			<label>选择权限</label>
 			<div style="margin-top:10px">
@@ -1157,7 +1229,7 @@ func adminAPIKeys(c echo.Context) error {
 			statusText = `<span class="badge badge-danger">禁用</span>`
 			btnText = "启用"
 		}
-		content += `<tr><td>` + strconv.Itoa(k["id"].(int)) + `</td><td style="font-family:monospace;word-break:break-all">` + k["api_key"].(string) + `</td><td>` + k["permissions"].(string) + `</td><td>` + statusText + `</td><td>` + k["created_at"].(string) + `</td><td><form method="POST" action="/admin/toggle_apikey" style="display:inline"><input type="hidden" name="id" value="` + strconv.Itoa(k["id"].(int)) + `"><button type="submit" class="btn">` + btnText + `</button></form></td></tr>`
+		content += `<tr><td>` + strconv.Itoa(k["id"].(int)) + `</td><td style="font-family:monospace;word-break:break-all">` + k["api_key"].(string) + `</td><td>` + k["permissions"].(string) + `</td><td>` + statusText + `</td><td>` + k["created_at"].(string) + `</td><td><form method="POST" action="/admin/toggle_apikey" style="display:inline"><input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `"><input type="hidden" name="id" value="` + strconv.Itoa(k["id"].(int)) + `"><button type="submit" class="btn">` + btnText + `</button></form></td></tr>`
 	}
 	content += `</tbody></table></div>`
 
@@ -1199,9 +1271,10 @@ func adminSettings(c echo.Context) error {
 	successMsg := c.QueryParam("success")
 	content := `<div class="card"><h2>系统设置</h2>`
 	if successMsg != "" {
-		content += `<div class="success">` + successMsg + `</div>`
+		content += `<div class="success">` + esc(successMsg) + `</div>`
 	}
 	content += `<form method="POST" action="/admin/settings">
+		<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 	<div class="form-group"><label>公开查询 RPM</label><input type="number" name="public_query_rpm" min="0" value="` + strconv.Itoa(queryRPM) + `"><p>无 API Key 调用 /api/v1/query、/api/v1/check 的每分钟限制，0 表示关闭公开查询。</p></div>
 	<div class="form-group"><label>公开提交 RPM</label><input type="number" name="public_submit_rpm" min="0" value="` + strconv.Itoa(submitRPM) + `"><p>无 API Key 调用 /api/v1/submit 的每分钟限制，0 表示关闭公开提交。</p></div>
 	<h2 style="margin-top:24px">提交风控</h2>
@@ -1257,7 +1330,7 @@ func adminLogs(c echo.Context) error {
 		var id, adminID int
 		var action, detail, ip, createdAt string
 		rows.Scan(&id, &adminID, &action, &detail, &ip, &createdAt)
-		content += `<tr><td>` + strconv.Itoa(id) + `</td><td>` + strconv.Itoa(adminID) + `</td><td>` + action + `</td><td>` + detail + `</td><td>` + ip + `</td><td>` + createdAt + `</td></tr>`
+		content += `<tr><td>` + strconv.Itoa(id) + `</td><td>` + strconv.Itoa(adminID) + `</td><td>` + esc(action) + `</td><td>` + esc(detail) + `</td><td>` + esc(ip) + `</td><td>` + esc(createdAt) + `</td></tr>`
 	}
 	content += `</tbody></table></div>`
 
@@ -1294,9 +1367,10 @@ h2{color:#111318;margin:0 0 20px;padding-bottom:14px;border-bottom:1px solid #e5
 <div class="card">
 <h2>首次登录必须修改密码</h2>`
 	if errorMsg != "" {
-		html += `<div class="error">` + errorMsg + `</div>`
+		html += `<div class="error">` + esc(errorMsg) + `</div>`
 	}
 	html += `<form method="POST">
+	<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
 <div class="form-group"><label>新密码 (至少6位)</label><input type="password" name="new_password" required minlength="6"></div>
 <div class="form-group"><label>确认新密码</label><input type="password" name="confirm_password" required minlength="6"></div>
 <button type="submit" class="btn">修改密码</button>
@@ -1325,6 +1399,7 @@ func adminChangePasswordPost(c echo.Context) error {
 	hash, _ := HashPassword(newPassword)
 
 	DB.Exec("UPDATE admins SET password = ?, must_change_password = 0 WHERE id = ?", hash, adminID)
+	DB.Exec("DELETE FROM admin_sessions WHERE admin_id = ?", adminID)
 
 	return c.Redirect(302, "/admin/")
 }

@@ -85,16 +85,6 @@ func GetClientIP(c echo.Context) string {
 		if ip != "" {
 			return ip
 		}
-		return c.RealIP()
-	}
-
-	ip := c.Request().Header.Get("X-Forwarded-For")
-	if ip != "" {
-		return strings.Split(ip, ",")[0]
-	}
-	ip = c.Request().Header.Get("X-Real-IP")
-	if ip != "" {
-		return ip
 	}
 	return c.RealIP()
 }
@@ -175,6 +165,16 @@ func handleAPISubmit(c echo.Context) error {
 		return Error(c, "QQ号格式不正确", http.StatusBadRequest)
 	}
 
+	if len(nickname) > 50 {
+		return Error(c, "昵称不能超过50个字符", http.StatusBadRequest)
+	}
+	if len(reason) > 2000 {
+		return Error(c, "云黑原因不能超过2000个字符", http.StatusBadRequest)
+	}
+	if len(subjectName) > 100 {
+		return Error(c, "主体名称不能超过100个字符", http.StatusBadRequest)
+	}
+
 	if reason == "" {
 		return Error(c, "请填写云黑原因", http.StatusBadRequest)
 	}
@@ -235,7 +235,7 @@ func handleAPISubmit(c echo.Context) error {
 	)
 	if err != nil {
 		tx.Rollback()
-		return Error(c, "提交失败: "+err.Error(), http.StatusInternalServerError)
+		return Error(c, "提交失败，请稍后重试", http.StatusInternalServerError)
 	}
 
 	recordID64, _ := res.LastInsertId()

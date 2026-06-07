@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -46,7 +48,18 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	e.Use(middleware.CORS())
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			origin := c.Request().Header.Get("Origin")
+			if origin != "" {
+				host := c.Request().Host
+				if !strings.Contains(origin, host) {
+					return c.String(http.StatusForbidden, "Forbidden")
+				}
+			}
+			return next(c)
+		}
+	})
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
