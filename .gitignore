@@ -1,0 +1,7 @@
+cloudblack
+cloudblack.exe
+*.exe
+data/
+.env
+temp/
+dist/

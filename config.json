@@ -1,0 +1,32 @@
+{
+  "debug": false,
+  "timezone": "Asia/Shanghai",
+  "port": "8080",
+  "db": {
+    "type": "sqlite",
+    "path": "data/cloudblack.db"
+  },
+  "admin": {
+    "salt": "cloudblack_2024_secure_salt",
+    "expire": 7200
+  },
+  "upload": {
+    "path": "web/assets/uploads",
+    "max_size": 5242880,
+    "allowed": ["jpg", "jpeg", "png", "gif", "webp"]
+  },
+  "system": {
+    "name": "云黑系统",
+    "version": "1.0.0"
+  },
+  "rate_limit": {
+    "api": 30,
+    "web": 5,
+    "admin": 10,
+    "window": 60
+  },
+  "security": {
+    "trust_cloudflare": true,
+    "secure_cookie": false
+  }
+}
