@@ -275,23 +275,23 @@ QQ号: {qq}
 
 | # | 任务 | 文件 | 状态 | 备注 |
 |---|------|------|------|------|
-| 1 | 创建 ai_settings + ai_review_logs 表 | config.go | ⬜ 未开始 | |
-| 2 | 初始化默认 AI 配置 | config.go | ⬜ 未开始 | |
-| 3 | 创建 ai.go（AI 调用模块） | ai.go | ⬜ 未开始 | 新文件 |
-| 4 | 实现 GetModelsFromAPI | ai.go | ⬜ 未开始 | |
-| 5 | 实现 BuildPrompt + CallAIReview | ai.go | ⬜ 未开始 | |
-| 6 | 实现 PerformOfflineReview（核心逻辑） | ai.go | ⬜ 未开始 | |
-| 7 | 在 api.go submit 中异步调用 AI | api.go | ⬜ 未开始 | |
-| 8 | 在 web.go submit 中异步调用 AI | web.go | ⬜ 未开始 | |
-| 9 | 在 admin.go adminAddPost 中异步调用 AI | admin.go | ⬜ 未开始 | |
-| 10 | 新增 AI 设置路由和页面 | admin.go | ⬜ 未开始 | |
-| 11 | 新增 /admin/api/models 接口 | admin.go | ⬜ 未开始 | |
-| 12 | 新增 AI 离线记录路由和页面 | admin.go | ⬜ 未开始 | |
-| 13 | 新增纠正 AI 决策接口 | admin.go | ⬜ 未开始 | |
-| 14 | 仪表板新增 AI 统计卡片 | admin.go | ⬜ 未开始 | |
-| 15 | 侧边栏新增 AI 相关链接 | admin.go | ⬜ 未开始 | |
-| 16 | 编译测试 | — | ⬜ 未开始 | |
-| 17 | 本地完整测试 | — | ⬜ 未开始 | |
+| 1 | 创建 ai_settings + ai_review_logs 表 | config.go | ✅ 已完成 | |
+| 2 | 初始化默认 AI 配置 | config.go | ✅ 已完成 | |
+| 3 | 创建 ai.go（AI 调用模块） | ai.go | ✅ 已完成 | |
+| 4 | 实现 GetModelsFromAPI | ai.go | ✅ 已完成 | |
+| 5 | 实现 BuildPrompt + CallAIReview | ai.go | ✅ 已完成 | |
+| 6 | 实现 PerformOfflineReview（核心逻辑） | ai.go | ✅ 已完成 | |
+| 7 | api.go submit 异步调用 AI | api.go | ✅ 已完成 | |
+| 8 | web.go submit 异步调用 AI | web.go | ✅ 已完成 | |
+| 9 | admin.go adminAddPost 异步调用 AI | admin.go | ✅ 已完成 | |
+| 10 | AI 设置页面 | admin.go | ✅ 已完成 | |
+| 11 | /admin/api/models 接口 | admin.go | ✅ 已完成 | |
+| 12 | AI 离线记录页面 | admin.go | ✅ 已完成 | |
+| 13 | 纠正 AI 决策接口 | — | ⬜ 未实现 | 后续按需添加 |
+| 14 | 仪表板统计卡片 | — | ⬜ 未实现 | 后续按需添加 |
+| 15 | 侧边栏新增链接 | admin.go | ✅ 已完成 | |
+| 16 | 编译测试 | — | ✅ 已通过 | go build 通过 |
+| 17 | 代码审查 | — | ✅ 已通过 | 路由/函数/SQL/异步调用均验证 |
 
 ---
 

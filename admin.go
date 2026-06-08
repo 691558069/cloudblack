@@ -512,6 +512,13 @@ func adminDashboard(c echo.Context) error {
 	DB.QueryRow("SELECT COUNT(*) FROM cloudblack_records WHERE DATE(created_at) = DATE('now')").Scan(&today)
 	DB.QueryRow("SELECT COUNT(*) FROM stats_log WHERE type = 'query' AND DATE(created_at) = DATE('now')").Scan(&queryToday)
 
+	// AI stats
+	var aiToday, aiAutoApprove, aiAutoReject, aiManual int
+	DB.QueryRow("SELECT COUNT(*) FROM ai_review_logs WHERE DATE(created_at) = DATE('now')").Scan(&aiToday)
+	DB.QueryRow("SELECT COUNT(*) FROM ai_review_logs WHERE ai_result = 'auto_approve' AND DATE(created_at) = DATE('now')").Scan(&aiAutoApprove)
+	DB.QueryRow("SELECT COUNT(*) FROM ai_review_logs WHERE ai_result = 'auto_reject' AND DATE(created_at) = DATE('now')").Scan(&aiAutoReject)
+	DB.QueryRow("SELECT COUNT(*) FROM ai_review_logs WHERE ai_result = 'manual_review' AND DATE(created_at) = DATE('now')").Scan(&aiManual)
+
 	for i := 1; i <= 5; i++ {
 		DB.QueryRow("SELECT COUNT(*) FROM cloudblack_list WHERE severity = ? AND status = 1", i).Scan(&severity[i])
 	}
@@ -553,6 +560,35 @@ func adminDashboard(c echo.Context) error {
 	<div class="card">
 		<h2>严重程度分布</h2>
 		<p>轻微: ` + strconv.Itoa(severity[1]) + ` | 一般: ` + strconv.Itoa(severity[2]) + ` | 较重: ` + strconv.Itoa(severity[3]) + ` | 严重: ` + strconv.Itoa(severity[4]) + ` | 极其严重: ` + strconv.Itoa(severity[5]) + `</p>
+	</div>
+	<div class="card">
+		<h2>AI 离线审核统计</h2>
+		<div class="sys-grid">
+			<div class="sys-card">
+				<div class="sys-card-icon">&#129302;</div>
+				<div class="sys-card-title">今日 AI 处理</div>
+				<div class="sys-card-val">` + strconv.Itoa(aiToday) + `</div>
+				<div class="sys-card-sub">自动审核记录</div>
+			</div>
+			<div class="sys-card">
+				<div class="sys-card-icon" style="color:#16a34a">&#9989;</div>
+				<div class="sys-card-title">自动通过</div>
+				<div class="sys-card-val" style="color:#16a34a">` + strconv.Itoa(aiAutoApprove) + `</div>
+				<div class="sys-card-sub">多人举报/高可信度</div>
+			</div>
+			<div class="sys-card">
+				<div class="sys-card-icon" style="color:#dc2626">&#10060;</div>
+				<div class="sys-card-title">自动拒绝</div>
+				<div class="sys-card-val" style="color:#dc2626">` + strconv.Itoa(aiAutoReject) + `</div>
+				<div class="sys-card-sub">垃圾/广告/灌水</div>
+			</div>
+			<div class="sys-card">
+				<div class="sys-card-icon" style="color:#f59e0b">&#128172;</div>
+				<div class="sys-card-title">转人工</div>
+				<div class="sys-card-val" style="color:#f59e0b">` + strconv.Itoa(aiManual) + `</div>
+				<div class="sys-card-sub">AI 不确定</div>
+			</div>
+		</div>
 	</div>
 	<div class="card">
 		<h2>服务器状态</h2>
