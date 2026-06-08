@@ -99,6 +99,8 @@ tbody tr:last-child td{border-bottom:0}
 .menu-btn{display:inline-flex!important}
 }
 .menu-btn{display:none;padding:6px 8px;background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text);font-size:18px;align-items:center;justify-content:center}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:15;opacity:0;transition:opacity .2s}
+.sidebar.open~.sidebar-overlay{display:block;opacity:1}
 .sys-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 .sys-card{background:var(--panel-soft);border:1px solid var(--border);border-radius:12px;padding:18px}
 .sys-card-icon{font-size:20px;line-height:1;margin-bottom:8px}
@@ -166,6 +168,7 @@ tbody tr:last-child td{border-bottom:0}
 <a href="/admin/apidoc" {{if eq .CurrentPage "/admin/apidoc"}}class="active"{{end}}><i class="nav-icon">&#128214;</i><span class="nav-text">API文档</span></a>
 </div>
 </aside>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="document.getElementById('sidebar').classList.remove('open')"></div>
 <div class="main">
 <header class="topbar">
 <button class="menu-btn" id="menuBtn" onclick="document.getElementById('sidebar').classList.toggle('open')">&equiv;</button>
@@ -178,11 +181,20 @@ tbody tr:last-child td{border-bottom:0}
 </div>
 <script>
 (function(){
-var sb=document.getElementById('sidebar'),menuBtn=document.getElementById('menuBtn');
+var sb=document.getElementById('sidebar'),menuBtn=document.getElementById('menuBtn'),overlay=document.getElementById('sidebarOverlay');
 if(localStorage.getItem('sidebar_collapsed')==='1')sb.classList.add('collapsed');
 function toggleSidebar(){sb.classList.toggle('collapsed');localStorage.setItem('sidebar_collapsed',sb.classList.contains('collapsed')?'1':'0')}
 document.getElementById('collapseBtn').addEventListener('click',function(e){e.preventDefault();toggleSidebar()});
 menuBtn.addEventListener('click',function(){sb.classList.toggle('open')});
+if(overlay){
+overlay.addEventListener('click',function(){sb.classList.remove('open')});
+}
+if(window.innerWidth<=768){
+var navLinks=sb.querySelectorAll('.sidebar-nav a');
+for(var i=0;i<navLinks.length;i++){
+navLinks[i].addEventListener('click',function(){sb.classList.remove('open')});
+}
+}
 })();
 </script>
 </body>

@@ -15,6 +15,7 @@ func RegisterWebRoutes(e *echo.Group, cfg *Config) {
 	e.GET("/web/", webIndex)
 	e.GET("/web/submit", webSubmit)
 	e.GET("/web/api", webAPIDoc)
+	e.GET("/api/web/stats", webStats)
 
 	webRL := NewRateLimiter(cfg.RateLimit.Web, time.Duration(cfg.RateLimit.Window)*time.Second)
 	e.GET("/api/web/query", webQuery, RateLimitMiddleware(webRL, func(c echo.Context) string {
@@ -82,7 +83,7 @@ body:after{content:"";position:fixed;inset:0;background-image:linear-gradient(rg
 <h1>云黑查询</h1>
 <p>查询QQ是否在云黑名单中</p>
 </div>
-<div class="status-chip">实时查询</div>
+	<div class="status-chip" id="statusChip">实时查询</div>
 </div>
 <div class="tab-nav">
 <a href="/web/" class="active">查询</a>
@@ -150,6 +151,12 @@ document.getElementById('result').style.display='block';
 });
 }
 document.getElementById('qqInput').addEventListener('keypress',function(e){if(e.key==='Enter')search()});
+fetch('/api/web/stats').then(r=>r.json()).then(res=>{
+if(res.data){
+var chip=document.getElementById('statusChip');
+if(chip)chip.textContent='已收录 '+res.data.total+' 条'+(res.data.pending?' · 待审 '+res.data.pending+' 条':'');
+}
+}).catch(function(){});
 </script>
 </body>
 </html>`
@@ -207,10 +214,10 @@ body:after{content:"";position:fixed;inset:0;background-image:linear-gradient(rg
 <div class="hero">
 <div class="header">
 <div>
-<h1>云黑查询</h1>
-<p>提交云黑记录</p>
+		<h1>提交云黑</h1>
+		<p>提交云黑记录</p>
 </div>
-<div class="status-chip">人工审核</div>
+<div class="status-chip" id="statusChip">人工审核</div>
 </div>
 <div class="tab-nav">
 <a href="/web/">查询</a>
@@ -251,7 +258,13 @@ body:after{content:"";position:fixed;inset:0;background-image:linear-gradient(rg
 </div>
 </div>
 <script>
-document.querySelector('form').addEventListener('submit',function(){document.getElementById('submitBtn').disabled=true;document.getElementById('submitBtn').textContent='提交中...'})
+document.querySelector('form').addEventListener('submit',function(){document.getElementById('submitBtn').disabled=true;document.getElementById('submitBtn').textContent='提交中...'});
+fetch('/api/web/stats').then(r=>r.json()).then(res=>{
+if(res.data){
+var chip=document.getElementById('statusChip');
+if(chip)chip.textContent='待审核 '+res.data.pending+' 条'+(res.data.total?' · 已收录 '+res.data.total+' 条':'');
+}
+}).catch(function(){});
 </script>
 </body>
 </html>`
@@ -325,6 +338,16 @@ func webSubmitPost(c echo.Context) error {
 	LogAccess("submit", int64(qqNum), "web", "", 0, c)
 
 	return c.Redirect(302, "/web/submit?success=提交成功，等待管理审核")
+}
+
+func webStats(c echo.Context) error {
+	var total, pending int
+	DB.QueryRow("SELECT COUNT(*) FROM cloudblack_list WHERE status = 1").Scan(&total)
+	DB.QueryRow("SELECT COUNT(*) FROM cloudblack_records WHERE status = 0").Scan(&pending)
+	return Success(c, "success", map[string]interface{}{
+		"total":   total,
+		"pending": pending,
+	})
 }
 
 func webQuery(c echo.Context) error {
