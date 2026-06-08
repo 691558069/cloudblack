@@ -252,7 +252,13 @@ func handleAPISubmit(c echo.Context) error {
 
 	recordID := int(recordID64)
 
- LogAccess("submit", qqNum, "api", logKey, submitterID, c)
+	LogAccess("submit", qqNum, "api", logKey, submitterID, c)
+
+	// 异步 AI 离线审核
+	go func() {
+		PerformOfflineReview(recordID, qqNum, reason, tags, EncodeAccounts(buildAccounts(qqNum, nickname, c.FormValue("accounts"))), nickname, severityInt)
+	}()
+
 	return Success(c, "提交成功", map[string]interface{}{"id": recordID})
 }
 

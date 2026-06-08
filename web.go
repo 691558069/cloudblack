@@ -333,9 +333,18 @@ func webSubmitPost(c echo.Context) error {
 	}
 
 	accounts := buildAccounts(int64(qqNum), nickname, c.FormValue("accounts"))
-	DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, status, subject_name, tags, accounts, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))",
+	res, err := DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, status, subject_name, tags, accounts, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))",
 		qqNum, nickname, reason, severityNum, subjectName, tags, EncodeAccounts(accounts))
+	if err != nil {
+		return c.Redirect(302, "/web/submit?error=提交失败")
+	}
+	recordID64, _ := res.LastInsertId()
 	LogAccess("submit", int64(qqNum), "web", "", 0, c)
+
+	// 异步 AI 离线审核
+	go func() {
+		PerformOfflineReview(int(recordID64), int64(qqNum), reason, tags, EncodeAccounts(accounts), nickname, severityNum)
+	}()
 
 	return c.Redirect(302, "/web/submit?success=提交成功，等待管理审核")
 }

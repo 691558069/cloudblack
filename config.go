@@ -271,6 +271,39 @@ func createTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_access_logs_action ON access_logs(action)`,
+		`CREATE TABLE IF NOT EXISTS ai_settings (
+			id INTEGER PRIMARY KEY,
+			enable_offline_ai INTEGER DEFAULT 0,
+			offline_start TEXT DEFAULT '23:00',
+			offline_end TEXT DEFAULT '08:00',
+			auto_reject_confidence INTEGER DEFAULT 20,
+			auto_approve_confidence INTEGER DEFAULT 85,
+			min_ip_count INTEGER DEFAULT 3,
+			min_query_count INTEGER DEFAULT 50,
+			api_provider TEXT DEFAULT 'openai',
+			api_key TEXT,
+			api_model TEXT DEFAULT 'gpt-4o-mini',
+			api_endpoint TEXT DEFAULT '',
+			updated_at TEXT DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS ai_review_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			record_id INTEGER NOT NULL,
+			action TEXT NOT NULL,
+			ai_result TEXT NOT NULL,
+			ai_score INTEGER DEFAULT 0,
+			ai_reason TEXT,
+			raw_response TEXT,
+			behavior_ip_count INTEGER DEFAULT 0,
+			behavior_query_count INTEGER DEFAULT 0,
+			final_status TEXT DEFAULT 'pending',
+			corrected_by INTEGER,
+			corrected_at TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_logs_record ON ai_review_logs(record_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_review_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_logs_status ON ai_review_logs(final_status)`,
 	}
 
 	for _, sql := range tables {

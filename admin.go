@@ -163,8 +163,10 @@ tbody tr:last-child td{border-bottom:0}
 <a href="/admin/admins" {{if eq .CurrentPage "/admin/admins"}}class="active"{{end}}><i class="nav-icon">&#128100;</i><span class="nav-text">管理员</span></a>
 <a href="/admin/apikeys" {{if eq .CurrentPage "/admin/apikeys"}}class="active"{{end}}><i class="nav-icon">&#128273;</i><span class="nav-text">API密钥</span></a>
 <a href="/admin/settings" {{if eq .CurrentPage "/admin/settings"}}class="active"{{end}}><i class="nav-icon">&#9881;</i><span class="nav-text">系统设置</span></a>
+<a href="/admin/ai_settings" {{if eq .CurrentPage "/admin/ai_settings"}}class="active"{{end}}><i class="nav-icon">&#129302;</i><span class="nav-text">AI 设置</span></a>
 <a href="/admin/logs" {{if eq .CurrentPage "/admin/logs"}}class="active"{{end}}><i class="nav-icon">&#128240;</i><span class="nav-text">日志</span></a>
 <a href="/admin/access_logs" {{if eq .CurrentPage "/admin/access_logs"}}class="active"{{end}}><i class="nav-icon">&#128269;</i><span class="nav-text">访问日志</span></a>
+<a href="/admin/ai_review_logs" {{if eq .CurrentPage "/admin/ai_review_logs"}}class="active"{{end}}><i class="nav-icon">&#129302;</i><span class="nav-text">AI 离线记录</span></a>
 <a href="/admin/apidoc" {{if eq .CurrentPage "/admin/apidoc"}}class="active"{{end}}><i class="nav-icon">&#128214;</i><span class="nav-text">API文档</span></a>
 </div>
 </aside>
@@ -342,6 +344,7 @@ func RegisterAdminRoutes(e *echo.Echo, cfg *Config) {
 	operatorAuth.GET("/logs", adminLogs)
 	operatorAuth.GET("/access_logs", adminAccessLogs)
 	operatorAuth.GET("/apidoc", adminAPIDoc)
+	operatorAuth.GET("/ai_review_logs", adminAIReviewLogs)
 
 	reviewerAuth := adminAuth.Group("")
 	reviewerAuth.Use(RequireRole(RoleReviewer))
@@ -361,6 +364,9 @@ func RegisterAdminRoutes(e *echo.Echo, cfg *Config) {
 	superAuth.POST("/toggle_apikey", csrfProtectMiddleware(adminToggleAPIKey))
 	superAuth.GET("/settings", adminSettings)
 	superAuth.POST("/settings", csrfProtectMiddleware(adminSettingsPost))
+	superAuth.GET("/ai_settings", adminAISettings)
+	superAuth.POST("/ai_settings", csrfProtectMiddleware(adminAISettingsPost))
+	superAuth.GET("/api/models", adminAPIModels)
 }
 
 func AdminAuthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -932,9 +938,18 @@ func adminAddPost(c echo.Context) error {
 
 	severityNum := parseSeverity(severity)
 
-	DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, submitter_id, status, created_at) VALUES (?, ?, ?, ?, 0, 0, datetime('now'))",
+	res, err := DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, submitter_id, status, created_at) VALUES (?, ?, ?, ?, 0, 0, datetime('now'))",
 		qqNum, nickname, reason, severityNum)
+	if err != nil {
+		return c.Redirect(302, "/admin/add?error=添加失败")
+	}
+	recordID64, _ := res.LastInsertId()
 	LogAccess("admin_add", int64(qqNum), "admin", "", getAdminID(c), c)
+
+	// 异步 AI 离线审核
+	go func() {
+		PerformOfflineReview(int(recordID64), int64(qqNum), reason, "", "", nickname, severityNum)
+	}()
 
 	return c.Redirect(302, "/admin/review")
 }
@@ -1335,6 +1350,256 @@ func adminSettingsPost(c echo.Context) error {
 	SetSetting("feedback_email", c.FormValue("feedback_email"))
 	SetSetting("enable_access_log", c.FormValue("enable_access_log"))
 	return c.Redirect(302, "/admin/settings?success=保存成功")
+}
+
+func adminAISettings(c echo.Context) error {
+	s := GetAISettings()
+	errorMsg := c.QueryParam("error")
+	successMsg := c.QueryParam("success")
+
+	content := `<div class="card"><h2>AI 离线审核设置</h2>`
+	if errorMsg != "" {
+		content += `<div class="error">` + esc(errorMsg) + `</div>`
+	}
+	if successMsg != "" {
+		content += `<div class="success">` + esc(successMsg) + `</div>`
+	}
+
+	content += `<form method="POST" action="/admin/ai_settings">
+	<input type="hidden" name="csrf_token" value="` + getCSRFToken(c) + `">
+	<h3>离线模式</h3>
+	<div class="form-group"><label>开启离线 AI 审核</label><select name="enable_offline_ai"><option value="0"` + func() string { if s.EnableOfflineAI == 0 { return " selected" }; return "" }() + `>关闭</option><option value="1"` + func() string { if s.EnableOfflineAI == 1 { return " selected" }; return "" }() + `>开启</option></select><p>开启后，在设定时段内提交的记录会自动触发 AI 分析。</p></div>
+	<div class="form-group"><label>自动启用时段</label><div style="display:flex;gap:10px"><input type="time" name="offline_start" value="` + esc(s.OfflineStart) + `" style="width:120px"><span style="color:#6b7280">至</span><input type="time" name="offline_end" value="` + esc(s.OfflineEnd) + `" style="width:120px"></div><p>例如 23:00 至 08:00 表示夜间无人值班时段。</p></div>
+	<h3>决策阈值</h3>
+	<div class="form-group"><label>自动拒绝阈值（AI 评分 &le;）</label><input type="number" name="auto_reject_confidence" min="0" max="100" value="` + strconv.Itoa(s.AutoRejectConfidence) + `" style="width:100px"><p>AI 评分低于此值自动拒绝（垃圾/广告/灌水），默认 20。</p></div>
+	<div class="form-group"><label>自动通过阈值（AI 评分 &ge;）</label><input type="number" name="auto_approve_confidence" min="0" max="100" value="` + strconv.Itoa(s.AutoApproveConfidence) + `" style="width:100px"><p>AI 评分高于此值且行为证据充分才自动通过，默认 85。</p></div>
+	<div class="form-group"><label>多人举报最低 IP 数</label><input type="number" name="min_ip_count" min="1" max="20" value="` + strconv.Itoa(s.MinIPCount) + `" style="width:100px"><p>72 小时内该 QQ 被多少个独立 IP 提交才算"多人举报"，默认 3。</p></div>
+	<div class="form-group"><label>高查询热度阈值</label><input type="number" name="min_query_count" min="0" max="9999" value="` + strconv.Itoa(s.MinQueryCount) + `" style="width:100px"><p>30 天内被查询多少次算"高关注度"，默认 50。</p></div>
+	<h3>API 配置</h3>
+	<div class="form-group"><label>API 提供商</label><select name="api_provider"><option value="openai"` + func() string { if s.APIProvider == "openai" { return " selected" }; return "" }() + `>OpenAI</option><option value="deepseek"` + func() string { if s.APIProvider == "deepseek" { return " selected" }; return "" }() + `>DeepSeek</option><option value="custom"` + func() string { if s.APIProvider == "custom" { return " selected" }; return "" }() + `>自定义</option></select></div>
+	<div class="form-group"><label>自定义接口地址</label><input type="text" name="api_endpoint" placeholder="https://api.example.com/v1" value="` + esc(s.APIEndpoint) + `"><p>留空使用官方地址，自定义需填写完整地址（含 /v1）。</p></div>
+	<div class="form-group"><label>API 密钥</label><input type="password" name="api_key" placeholder="sk-..." value="` + esc(s.APIKey) + `"><p>密钥仅存储在本地数据库，不会外传。</p></div>
+	<div class="form-group"><label>模型</label><div style="display:flex;gap:8px"><select id="modelSelect" name="api_model" style="flex:1"><option value="` + esc(s.APIModel) + `" selected>` + esc(s.APIModel) + `</option></select><input type="text" id="modelInput" name="api_model" value="` + esc(s.APIModel) + `" style="flex:1;display:none" placeholder="手动输入"><button type="button" class="btn btn-sm" onclick="refreshModels()">刷新列表</button></div><p id="modelHint" style="color:#6b7280;font-size:13px">填写 API 地址和密钥后可刷新获取模型列表。</p></div>
+	<button type="submit" class="btn">保存设置</button>
+	</form></div>
+	<script>
+	function refreshModels(){
+		var btn=document.querySelector('[onclick="refreshModels()"]');
+		btn.textContent='获取中...';
+		btn.disabled=true;
+		fetch('/admin/api/models').then(r=>r.json()).then(res=>{
+			btn.textContent='刷新列表';
+			btn.disabled=false;
+			var sel=document.getElementById('modelSelect');
+			var inp=document.getElementById('modelInput');
+			if(res.models&&res.models.length>0){
+				sel.innerHTML='';
+				res.models.forEach(function(m){
+					var opt=document.createElement('option');
+					opt.value=m;opt.textContent=m;
+					if(m==="` + esc(s.APIModel) + `")opt.selected=true;
+					sel.appendChild(opt);
+				});
+				var manual=document.createElement('option');
+				manual.value='__manual__';manual.textContent='-- 手动输入 --';
+				sel.appendChild(manual);
+				sel.style.display='block';
+				inp.style.display='none';
+				document.getElementById('modelHint').textContent='获取成功，共'+res.models.length+'个模型';
+				document.getElementById('modelHint').style.color='#16a34a';
+			}else{
+				sel.style.display='none';
+				inp.style.display='block';
+				document.getElementById('modelHint').textContent='该 API 不支持获取模型列表，请手动输入';
+				document.getElementById('modelHint').style.color='#b91c1c';
+			}
+		}).catch(function(){
+			btn.textContent='刷新列表';
+			btn.disabled=false;
+			document.getElementById('modelSelect').style.display='none';
+			document.getElementById('modelInput').style.display='block';
+			document.getElementById('modelHint').textContent='获取失败，请检查 API 地址和密钥';
+			document.getElementById('modelHint').style.color='#b91c1c';
+		});
+	}
+	document.getElementById('modelSelect').addEventListener('change',function(){
+		if(this.value==='__manual__'){
+			document.getElementById('modelSelect').style.display='none';
+			document.getElementById('modelInput').style.display='block';
+			document.getElementById('modelInput').name='api_model';
+			document.getElementById('modelSelect').name='api_model_unused';
+		}else{
+			document.getElementById('modelSelect').name='api_model';
+			document.getElementById('modelInput').name='api_model_unused';
+		}
+	});
+	if(document.querySelector('[name="api_key"]').value&&document.querySelector('[name="api_endpoint"]').value){
+		refreshModels();
+	}
+	</script>`
+
+	return renderAdminPage(c, "AI 设置", content)
+}
+
+func adminAISettingsPost(c echo.Context) error {
+	enable := c.FormValue("enable_offline_ai")
+	if enable == "" {
+		enable = "0"
+	}
+	start := c.FormValue("offline_start")
+	end := c.FormValue("offline_end")
+	rejectConf := c.FormValue("auto_reject_confidence")
+	approveConf := c.FormValue("auto_approve_confidence")
+	minIP := c.FormValue("min_ip_count")
+	minQuery := c.FormValue("min_query_count")
+	provider := c.FormValue("api_provider")
+	endpoint := c.FormValue("api_endpoint")
+	apiKey := c.FormValue("api_key")
+	model := c.FormValue("api_model")
+
+	if rejectConf == "" {
+		rejectConf = "20"
+	}
+	if approveConf == "" {
+		approveConf = "85"
+	}
+	if minIP == "" {
+		minIP = "3"
+	}
+	if minQuery == "" {
+		minQuery = "50"
+	}
+
+	DB.Exec(`UPDATE ai_settings SET enable_offline_ai = ?, offline_start = ?, offline_end = ?, auto_reject_confidence = ?, auto_approve_confidence = ?, min_ip_count = ?, min_query_count = ?, api_provider = ?, api_endpoint = ?, api_key = ?, api_model = ?, updated_at = datetime('now') WHERE id = 1`,
+		enable, start, end, rejectConf, approveConf, minIP, minQuery, provider, endpoint, apiKey, model)
+
+	return c.Redirect(302, "/admin/ai_settings?success=保存成功")
+}
+
+func adminAPIModels(c echo.Context) error {
+	s := GetAISettings()
+	models, err := GetModelsFromAPI(s.APIEndpoint, s.APIKey)
+	if err != nil {
+		return c.JSON(http.StatusOK, map[string]interface{}{"models": []string{}, "error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]interface{}{"models": models})
+}
+
+func adminAIReviewLogs(c echo.Context) error {
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize := 50
+	offset := (page - 1) * pageSize
+
+	aiResultFilter := c.QueryParam("ai_result")
+	finalStatus := c.QueryParam("final_status")
+	qqFilter := c.QueryParam("qq")
+
+	where := "WHERE 1=1"
+	var args []interface{}
+	if aiResultFilter != "" {
+		where += " AND ai_result = ?"
+		args = append(args, aiResultFilter)
+	}
+	if finalStatus != "" {
+		where += " AND final_status = ?"
+		args = append(args, finalStatus)
+	}
+	if qqFilter != "" {
+		where += " AND qq = ?"
+		args = append(args, qqFilter)
+	}
+
+	var total int
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+	DB.QueryRow("SELECT COUNT(*) FROM ai_review_logs "+where, countArgs...).Scan(&total)
+
+	queryArgs := append(args, pageSize, offset)
+	rows, err := DB.Query("SELECT id, record_id, action, ai_result, ai_score, ai_reason, behavior_ip_count, behavior_query_count, final_status, created_at FROM ai_review_logs "+where+" ORDER BY id DESC LIMIT ? OFFSET ?", queryArgs...)
+	if err != nil {
+		return renderAdminPage(c, "AI 离线记录", `<div class="card"><p class="error">数据查询失败</p></div>`)
+	}
+	defer rows.Close()
+
+	content := `<div class="card"><h2>AI 离线审核记录</h2>`
+	content += `<form method="GET" action="/admin/ai_review_logs" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">`
+	content += `<select name="ai_result" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px"><option value="">全部决策</option>`
+	for _, r := range []string{"auto_approve", "auto_reject", "manual_review"} {
+		selected := ""
+		if aiResultFilter == r {
+			selected = " selected"
+		}
+		content += `<option value="` + r + `"` + selected + `>` + r + `</option>`
+	}
+	content += `</select>`
+	content += `<select name="final_status" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px"><option value="">全部状态</option>`
+	for _, s := range []string{"pending", "confirmed", "corrected"} {
+		selected := ""
+		if finalStatus == s {
+			selected = " selected"
+		}
+		content += `<option value="` + s + `"` + selected + `>` + s + `</option>`
+	}
+	content += `</select>`
+	content += `<input type="text" name="qq" placeholder="QQ号" value="` + esc(qqFilter) + `" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px;width:120px">`
+	content += `<button class="btn btn-sm" type="submit">筛选</button>`
+	content += `</form>`
+
+	content += `<table><thead><tr><th>ID</th><th>QQ</th><th>决策</th><th>AI 评分</th><th>行为数据</th><th>AI 理由</th><th>状态</th><th>时间</th></tr></thead><tbody>`
+	for rows.Next() {
+		var id, recordID, aiScore, ipCount, queryCount int
+		var action, aiResult, aiReason, status, createdAt string
+		rows.Scan(&id, &recordID, &action, &aiResult, &aiScore, &aiReason, &ipCount, &queryCount, &status, &createdAt)
+
+		var qqStr string
+		var qq int64
+		DB.QueryRow("SELECT qq FROM cloudblack_records WHERE id = ?", recordID).Scan(&qq)
+		if qq > 0 {
+			qqStr = strconv.FormatInt(qq, 10)
+		} else {
+			qqStr = "-"
+		}
+
+		resultClass := ""
+		if aiResult == "auto_approve" {
+			resultClass = `<span style="color:#16a34a;font-weight:700">自动通过</span>`
+		} else if aiResult == "auto_reject" {
+			resultClass = `<span style="color:#dc2626;font-weight:700">自动拒绝</span>`
+		} else {
+			resultClass = `<span style="color:#6b7280">转人工</span>`
+		}
+
+		statusClass := status
+		if status == "confirmed" {
+			statusClass = `<span style="color:#16a34a">已确认</span>`
+		} else if status == "corrected" {
+			statusClass = `<span style="color:#dc2626">已纠正</span>`
+		} else {
+			statusClass = `<span style="color:#f59e0b">待确认</span>`
+		}
+
+		content += `<tr><td>` + strconv.Itoa(id) + `</td><td>` + qqStr + `</td><td>` + resultClass + `</td><td>` + strconv.Itoa(aiScore) + `</td><td>` + strconv.Itoa(ipCount) + `IP / 查询` + strconv.Itoa(queryCount) + `</td><td>` + esc(aiReason) + `</td><td>` + statusClass + `</td><td>` + esc(createdAt) + `</td></tr>`
+	}
+	content += `</tbody></table>`
+
+	maxPage := (total + pageSize - 1) / pageSize
+	if maxPage < 1 {
+		maxPage = 1
+	}
+	content += `<div class="pagination">`
+	for i := 1; i <= maxPage; i++ {
+		active := ""
+		if i == page {
+			active = ` class="active"`
+		}
+		content += `<a` + active + ` href="/admin/ai_review_logs?page=` + strconv.Itoa(i) + `&ai_result=` + esc(aiResultFilter) + `&final_status=` + esc(finalStatus) + `&qq=` + esc(qqFilter) + `">` + strconv.Itoa(i) + `</a>`
+	}
+	content += `</div></div>`
+
+	return renderAdminPage(c, "AI 离线记录", content)
 }
 
 func adminLogs(c echo.Context) error {
