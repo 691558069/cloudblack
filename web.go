@@ -322,6 +322,7 @@ func webSubmitPost(c echo.Context) error {
 	accounts := buildAccounts(int64(qqNum), nickname, c.FormValue("accounts"))
 	DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, status, subject_name, tags, accounts, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))",
 		qqNum, nickname, reason, severityNum, subjectName, tags, EncodeAccounts(accounts))
+	LogAccess("submit", int64(qqNum), "web", "", 0, c)
 
 	return c.Redirect(302, "/web/submit?success=提交成功，等待管理审核")
 }
@@ -366,6 +367,7 @@ func webQuery(c echo.Context) error {
 	} else {
 		err = DB.QueryRow("SELECT l.qq, l.nickname, l.reason, l.severity, COALESCE(l.tags,''), COALESCE(l.accounts,'') FROM subject_accounts a JOIN cloudblack_list l ON l.subject_id = a.subject_id WHERE a.platform = ? AND a.account = ? AND l.status = 1 ORDER BY l.id DESC LIMIT 1", platform, account).Scan(&record.QQ, &record.Nickname, &record.Reason, &record.Severity, &record.Tags, &record.AccountsRaw)
 	}
+	LogAccess("query", qqNum, "web", "", 0, c)
 
 	if err != nil {
 		return Success(c, "平台暂未收录该账号，不代表绝对安全", map[string]interface{}{"in_blacklist": false, "platform": platform, "account": account, "note": "暂未收录仅表示当前平台暂无相关云黑记录"})

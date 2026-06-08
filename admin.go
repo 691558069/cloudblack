@@ -162,6 +162,7 @@ tbody tr:last-child td{border-bottom:0}
 <a href="/admin/apikeys" {{if eq .CurrentPage "/admin/apikeys"}}class="active"{{end}}><i class="nav-icon">&#128273;</i><span class="nav-text">API密钥</span></a>
 <a href="/admin/settings" {{if eq .CurrentPage "/admin/settings"}}class="active"{{end}}><i class="nav-icon">&#9881;</i><span class="nav-text">系统设置</span></a>
 <a href="/admin/logs" {{if eq .CurrentPage "/admin/logs"}}class="active"{{end}}><i class="nav-icon">&#128240;</i><span class="nav-text">日志</span></a>
+<a href="/admin/access_logs" {{if eq .CurrentPage "/admin/access_logs"}}class="active"{{end}}><i class="nav-icon">&#128269;</i><span class="nav-text">访问日志</span></a>
 <a href="/admin/apidoc" {{if eq .CurrentPage "/admin/apidoc"}}class="active"{{end}}><i class="nav-icon">&#128214;</i><span class="nav-text">API文档</span></a>
 </div>
 </aside>
@@ -327,6 +328,7 @@ func RegisterAdminRoutes(e *echo.Echo, cfg *Config) {
 	operatorAuth.POST("/review_action", csrfProtectMiddleware(adminReviewAction))
 	operatorAuth.GET("/stats", adminStats)
 	operatorAuth.GET("/logs", adminLogs)
+	operatorAuth.GET("/access_logs", adminAccessLogs)
 	operatorAuth.GET("/apidoc", adminAPIDoc)
 
 	reviewerAuth := adminAuth.Group("")
@@ -920,6 +922,7 @@ func adminAddPost(c echo.Context) error {
 
 	DB.Exec("INSERT INTO cloudblack_records (qq, nickname, reason, severity, submitter_id, status, created_at) VALUES (?, ?, ?, ?, 0, 0, datetime('now'))",
 		qqNum, nickname, reason, severityNum)
+	LogAccess("admin_add", int64(qqNum), "admin", "", getAdminID(c), c)
 
 	return c.Redirect(302, "/admin/review")
 }
@@ -1014,6 +1017,8 @@ func adminReviewAction(c echo.Context) error {
 	if err := performReviewAction(id, action, getAdminID(c), note); err != nil {
 		return c.Redirect(302, "/admin/review?error=操作失败，请重试")
 	}
+	qqNum, _ := strconv.ParseInt(id, 10, 64)
+	LogAccess("review_"+action, qqNum, "admin", "", getAdminID(c), c)
 	return c.Redirect(302, "/admin/review")
 }
 
@@ -1282,6 +1287,7 @@ func adminSettings(c echo.Context) error {
 	<div class="form-group"><label>原因最低字数</label><input type="number" name="submit_min_reason" min="0" value="` + strconv.Itoa(minReason) + `"><p>提交原因不足此字数者拒绝，同时过滤纯数字/符号/重复字符等垃圾内容，0 表示关闭。</p></div>
 	<div class="form-group"><label>全局每小时提交上限</label><input type="number" name="submit_max_hour" min="0" value="` + strconv.Itoa(maxHour) + `"><p>整个系统每小时最多接受多少条提交，0 表示不限制。</p></div>
 	<h2 style="margin-top:24px">其他</h2>
+	<div class="form-group"><label>访问日志</label><select name="enable_access_log"><option value="0"` + func() string { if GetSetting("enable_access_log", "0") == "0" { return " selected" }; return "" }() + `>关闭</option><option value="1"` + func() string { if GetSetting("enable_access_log", "0") == "1" { return " selected" }; return "" }() + `>开启</option></select><p>开启后记录所有查询和提交操作，包括来源、IP、API密钥等信息。</p></div>
 	<div class="form-group"><label>反馈邮箱</label><input type="text" name="feedback_email" placeholder="admin@example.com" value="` + esc(feedbackEmail) + `"><p>设置后在查询页面显示联系链接，不设置则不显示。</p></div>
 	<button type="submit" class="btn">保存设置</button>
 	</form></div>`
@@ -1315,6 +1321,7 @@ func adminSettingsPost(c echo.Context) error {
 	SetSetting("submit_min_reason", minReason)
 	SetSetting("submit_max_hour", maxHour)
 	SetSetting("feedback_email", c.FormValue("feedback_email"))
+	SetSetting("enable_access_log", c.FormValue("enable_access_log"))
 	return c.Redirect(302, "/admin/settings?success=保存成功")
 }
 
@@ -1335,6 +1342,118 @@ func adminLogs(c echo.Context) error {
 	content += `</tbody></table></div>`
 
 	return renderAdminPage(c, "操作日志", content)
+}
+
+func adminAccessLogs(c echo.Context) error {
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize := 50
+	offset := (page - 1) * pageSize
+
+	actionFilter := c.QueryParam("action")
+	sourceFilter := c.QueryParam("source")
+	qqFilter := c.QueryParam("qq")
+
+	where := "WHERE 1=1"
+	var args []interface{}
+	if actionFilter != "" {
+		where += " AND action = ?"
+		args = append(args, actionFilter)
+	}
+	if sourceFilter != "" {
+		where += " AND source = ?"
+		args = append(args, sourceFilter)
+	}
+	if qqFilter != "" {
+		where += " AND qq = ?"
+		args = append(args, qqFilter)
+	}
+
+	var total int
+	countArgs := make([]interface{}, len(args))
+	copy(countArgs, args)
+	DB.QueryRow("SELECT COUNT(*) FROM access_logs "+where, countArgs...).Scan(&total)
+
+	queryArgs := append(args, pageSize, offset)
+	rows, err := DB.Query("SELECT id, action, qq, source, api_key, admin_id, ip, user_agent, created_at FROM access_logs "+where+" ORDER BY id DESC LIMIT ? OFFSET ?", queryArgs...)
+	if err != nil {
+		return renderAdminPage(c, "访问日志", `<div class="card"><p class="error">数据查询失败</p></div>`)
+	}
+	defer rows.Close()
+
+	enabled := GetSetting("enable_access_log", "0") == "1"
+	content := `<div class="card"><h2>访问日志` + func() string {
+		if enabled {
+			return ` <span style="color:#16a34a;font-size:13px;font-weight:600">已开启</span>`
+		}
+		return ` <span style="color:#6b7280;font-size:13px;font-weight:600">未开启</span>`
+	}() + `</h2>`
+	if !enabled {
+		content += `<p style="color:#6b7280;font-size:13px">访问日志未开启，请在 <a href="/admin/settings">系统设置</a> 中开启。</p>`
+	}
+
+	content += `<form method="GET" action="/admin/access_logs" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">`
+	content += `<select name="action" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px"><option value="">全部操作</option>`
+	for _, a := range []string{"query", "check", "batch_query", "submit", "review_approve", "review_reject", "admin_add"} {
+		selected := ""
+		if actionFilter == a {
+			selected = " selected"
+		}
+		content += `<option value="` + a + `"` + selected + `>` + a + `</option>`
+	}
+	content += `</select>`
+	content += `<select name="source" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px"><option value="">全部来源</option>`
+	for _, s := range []string{"api", "web", "admin"} {
+		selected := ""
+		if sourceFilter == s {
+			selected = " selected"
+		}
+		content += `<option value="` + s + `"` + selected + `>` + s + `</option>`
+	}
+	content += `</select>`
+	content += `<input type="text" name="qq" placeholder="QQ号" value="` + esc(qqFilter) + `" style="padding:8px;border:1px solid #d6d9df;border-radius:8px;font-size:13px;width:120px">`
+	content += `<button class="btn" type="submit">筛选</button>`
+	content += `</form>`
+
+	content += `<table><thead><tr><th>ID</th><th>操作</th><th>QQ</th><th>来源</th><th>API密钥</th><th>管理员</th><th>IP</th><th>User-Agent</th><th>时间</th></tr></thead><tbody>`
+	for rows.Next() {
+		var id, adminID int
+		var qq int64
+		var action, source, apiKey, ip, userAgent, createdAt string
+		rows.Scan(&id, &action, &qq, &source, &apiKey, &adminID, &ip, &userAgent, &createdAt)
+		qqStr := "-"
+		if qq > 0 {
+			qqStr = strconv.FormatInt(qq, 10)
+		}
+		apiKeyStr := "-"
+		if apiKey != "" && apiKey != "public" {
+			apiKeyStr = apiKey[:8] + "..."
+		}
+		adminStr := "-"
+		if adminID > 0 {
+			adminStr = strconv.Itoa(adminID)
+		}
+		content += `<tr><td>` + strconv.Itoa(id) + `</td><td>` + esc(action) + `</td><td>` + qqStr + `</td><td>` + esc(source) + `</td><td>` + apiKeyStr + `</td><td>` + adminStr + `</td><td>` + esc(ip) + `</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="` + esc(userAgent) + `">` + esc(userAgent) + `</td><td>` + esc(createdAt) + `</td></tr>`
+	}
+	content += `</tbody></table>`
+
+	maxPage := (total + pageSize - 1) / pageSize
+	if maxPage < 1 {
+		maxPage = 1
+	}
+	content += `<div class="pagination">`
+	for i := 1; i <= maxPage; i++ {
+		active := ""
+		if i == page {
+			active = ` class="active"`
+		}
+		content += `<a` + active + ` href="/admin/access_logs?page=` + strconv.Itoa(i) + `&action=` + esc(actionFilter) + `&source=` + esc(sourceFilter) + `&qq=` + esc(qqFilter) + `">` + strconv.Itoa(i) + `</a>`
+	}
+	content += `</div></div>`
+
+	return renderAdminPage(c, "访问日志", content)
 }
 
 func adminChangePassword(c echo.Context) error {

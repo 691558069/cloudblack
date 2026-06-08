@@ -17,6 +17,8 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	memStat "github.com/shirou/gopsutil/v3/mem"
 	_ "modernc.org/sqlite"
+
+	"github.com/labstack/echo/v4"
 )
 
 var StartTime = time.Now()
@@ -256,6 +258,19 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_cloudblack_status ON cloudblack_list(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_records_qq ON cloudblack_records(qq)`,
 		`CREATE INDEX IF NOT EXISTS idx_subject_accounts ON subject_accounts(platform, account)`,
+		`CREATE TABLE IF NOT EXISTS access_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			action TEXT NOT NULL,
+			qq INTEGER,
+			source TEXT NOT NULL,
+			api_key TEXT,
+			admin_id INTEGER,
+			ip TEXT,
+			user_agent TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_logs_action ON access_logs(action)`,
 	}
 
 	for _, sql := range tables {
@@ -387,6 +402,23 @@ func CheckGlobalSubmitLimit(maxPerHour int) bool {
 	var cnt int
 	DB.QueryRow("SELECT COUNT(*) FROM cloudblack_records WHERE created_at > datetime('now','-1 hour')").Scan(&cnt)
 	return cnt < maxPerHour
+}
+
+func LogAccess(action string, qq int64, source, apiKey string, adminID int, c echo.Context) {
+	if GetSetting("enable_access_log", "0") != "1" {
+		return
+	}
+	ip := ""
+	ua := ""
+	if c != nil {
+		ip = GetClientIP(c)
+		ua = c.Request().UserAgent()
+		if len(ua) > 200 {
+			ua = ua[:200]
+		}
+	}
+	DB.Exec("INSERT INTO access_logs (action, qq, source, api_key, admin_id, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+		action, qq, source, apiKey, adminID, ip, ua)
 }
 
 func CheckReasonQuality(reason string, minLen int) bool {

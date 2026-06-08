@@ -252,6 +252,7 @@ func handleAPISubmit(c echo.Context) error {
 
 	recordID := int(recordID64)
 
+ LogAccess("submit", qqNum, "api", logKey, submitterID, c)
 	return Success(c, "提交成功", map[string]interface{}{"id": recordID})
 }
 
@@ -300,6 +301,7 @@ func handleAPIQuery(c echo.Context) error {
 		"INSERT INTO stats_log (type, qq, api_key, ip, created_at) VALUES ('query', ?, ?, ?, datetime('now'))",
 		qqNum, logKey, GetClientIP(c),
 	)
+	LogAccess("query", qqNum, "api", logKey, 0, c)
 
 	if err != nil {
 		return Success(c, "平台暂未收录该QQ号，不代表绝对安全", map[string]interface{}{"in_blacklist": false, "note": "暂未收录仅表示当前平台暂无相关云黑记录"})
@@ -397,6 +399,7 @@ func handleAPIBatch(c echo.Context) error {
 		"INSERT INTO stats_log (type, api_key, ip, created_at) VALUES ('batch_query', ?, ?, datetime('now'))",
 		logKey, GetClientIP(c),
 	)
+	LogAccess("batch_query", 0, "api", logKey, 0, c)
 
 	var result []map[string]interface{}
 	for _, qq := range qqNums {
@@ -461,6 +464,12 @@ func handleAPICheck(c echo.Context) error {
 
 	var record Record
 	err := DB.QueryRow("SELECT qq FROM cloudblack_list WHERE qq = ?", qqNum).Scan(&record.QQ)
+
+	logKey := "public"
+	if apiKey != "" {
+		logKey = apiKey
+	}
+	LogAccess("check", qqNum, "api", logKey, 0, c)
 
 	if err != nil {
 		return Success(c, "平台暂未收录该QQ号，不代表绝对安全", map[string]interface{}{"in_blacklist": false, "qq": qqNum, "note": "暂未收录仅表示当前平台暂无相关云黑记录"})
